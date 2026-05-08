@@ -97,6 +97,7 @@ class NoteGenerator:
         video_interval: int = 0,
         grid_size: Optional[List[int]] = None,
         skip_ai: bool = False,
+        manual_ai: bool = False,
     ) -> NoteResult | None:
         """
         主流程：按步骤依次下载、转写、GPT 总结、截图/链接处理、存库、返回 NoteResult。
@@ -122,7 +123,7 @@ class NoteGenerator:
             grid_size = []
 
         try:
-            logger.info(f"开始生成笔记 (task_id={task_id}, skip_ai={skip_ai})")
+            logger.info(f"开始生成笔记 (task_id={task_id}, skip_ai={skip_ai}, manual_ai={manual_ai})")
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
@@ -202,6 +203,26 @@ class NoteGenerator:
                     status_phase=TaskStatus.TRANSCRIBING,
                     task_id=task_id,
                 )
+
+            # 3.5 手动 AI 模式：字幕获取后暂停，等待用户手动导入 AI 结果
+            if manual_ai:
+                logger.info(f"手动 AI 模式触发！transcript={transcript is not None}, video_path={self.video_path}")
+                self._save_manual_task(
+                    task_id=task_id,
+                    transcript=transcript,
+                    audio_meta=audio_meta,
+                    platform=platform,
+                    link=link,
+                    screenshot=screenshot,
+                    _format=_format,
+                    style=style,
+                    extras=extras,
+                    video_url=str(video_url),
+                    video_path=str(self.video_path) if self.video_path else None,
+                )
+                self._update_status(task_id, TaskStatus.MANUAL_PENDING)
+                logger.info(f"手动 AI 模式：任务暂停等待导入 (task_id={task_id})")
+                return None
 
             # 3. GPT 总结（如果 skip_ai 为 True，则直接使用字幕内容）
             if skip_ai:
@@ -359,6 +380,165 @@ class NoteGenerator:
                     f.write(f"Error writing status: {str(e)}")
             except:
                 logger.error(f"写入错误  {e}")
+
+    def _save_manual_task(
+        self,
+        task_id: str,
+        transcript: TranscriptResult,
+        audio_meta: AudioDownloadResult,
+        platform: str,
+        link: bool,
+        screenshot: bool,
+        _format: Optional[List[str]],
+        style: Optional[str],
+        extras: Optional[str],
+        video_url: str,
+        video_path: Optional[str],
+    ):
+        """
+        保存手动 AI 模式的任务信息，包括字幕和生成的提示词
+
+        :param task_id: 任务唯一 ID
+        :param transcript: 转写结果
+        :param audio_meta: 音频元信息
+        :param platform: 平台标识
+        :param link: 是否插入链接
+        :param screenshot: 是否插入截图
+        :param _format: 格式选项列表
+        :param style: 笔记风格
+        :param extras: 额外参数
+        :param video_url: 视频 URL
+        :param video_path: 本地视频路径
+        """
+        from app.gpt.prompt_builder import generate_base_prompt
+        from app.models.transcriber_model import TranscriptSegment
+
+        NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        manual_task_file = NOTE_OUTPUT_DIR / f"{task_id}.manual_task.json"
+
+        segments = [
+            {
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text
+            }
+            for seg in transcript.segments
+        ]
+
+        segment_text = "\n".join([f"[{seg['start']:.2f} - {seg['end']:.2f}]: {seg['text']}" for seg in segments])
+        prompt = generate_base_prompt(
+            title=audio_meta.title,
+            segment_text=segment_text,
+            tags=audio_meta.raw_info.get("tags", []),
+            _format=_format,
+            style=style,
+            extras=extras,
+        )
+
+        task_data = {
+            "task_id": task_id,
+            "status": TaskStatus.MANUAL_PENDING.value,
+            "video_url": video_url,
+            "video_path": video_path,
+            "platform": platform,
+            "title": audio_meta.title,
+            "video_id": audio_meta.video_id,
+            "transcript": transcript.full_text,
+            "transcript_segments": segments,
+            "prompt": prompt,
+            "options": {
+                "format": _format or [],
+                "style": style,
+                "screenshot": screenshot,
+                "link": link,
+                "extras": extras,
+            },
+        }
+
+        try:
+            temp_file = manual_task_file.with_suffix('.tmp')
+            with temp_file.open('w', encoding='utf-8') as f:
+                json.dump(task_data, f, ensure_ascii=False, indent=2)
+            temp_file.replace(manual_task_file)
+            logger.info(f"手动任务信息已保存 (task_id={task_id})")
+        except Exception as e:
+            logger.error(f"保存手动任务信息失败 (task_id={task_id})：{e}")
+            raise
+
+    def continue_manual_task(self, task_id: str, ai_generated_content: str) -> NoteResult | None:
+        """
+        继续执行手动 AI 模式暂停的任务
+
+        :param task_id: 任务唯一 ID
+        :param ai_generated_content: 用户手动导入的 AI 生成内容
+        :return: NoteResult 对象
+        """
+        NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        manual_task_file = NOTE_OUTPUT_DIR / f"{task_id}.manual_task.json"
+
+        if not manual_task_file.exists():
+            logger.error(f"手动任务文件不存在 (task_id={task_id})")
+            raise FileNotFoundError(f"任务 {task_id} 的手动任务文件不存在")
+
+        try:
+            with manual_task_file.open('r', encoding='utf-8') as f:
+                task_data = json.load(f)
+        except Exception as e:
+            logger.error(f"读取手动任务文件失败 (task_id={task_id})：{e}")
+            raise
+
+        markdown = ai_generated_content
+        platform = task_data.get("platform", "bilibili")
+        options = task_data.get("options", {})
+        video_path = task_data.get("video_path")
+
+        from app.models.audio_model import AudioDownloadResult
+        from app.models.transcriber_model import TranscriptResult, TranscriptSegment
+
+        audio_meta = AudioDownloadResult(
+            title=task_data.get("title", ""),
+            video_id=task_data.get("video_id", ""),
+            file_path="",
+            duration=0,
+            raw_info={},
+        )
+
+        segments_data = task_data.get("transcript_segments", [])
+        transcript_segments = [
+            TranscriptSegment(start=seg["start"], end=seg["end"], text=seg["text"])
+            for seg in segments_data
+        ]
+        transcript = TranscriptResult(
+            full_text=task_data.get("transcript", ""),
+            segments=transcript_segments,
+        )
+
+        self._update_status(task_id, TaskStatus.SUMMARIZING)
+
+        if options.get("format") and video_path:
+            markdown = self._post_process_markdown(
+                markdown=markdown,
+                video_path=Path(video_path) if video_path else None,
+                formats=options.get("format", []),
+                audio_meta=audio_meta,
+                platform=platform,
+            )
+
+        markdown = prepend_source_link(markdown, task_data.get("video_url", ""))
+
+        self._update_status(task_id, TaskStatus.SAVING)
+        self._save_metadata(
+            video_id=task_data.get("video_id", ""),
+            platform=platform,
+            task_id=task_id,
+        )
+
+        self._update_status(task_id, TaskStatus.SUCCESS)
+        logger.info(f"手动任务继续执行成功 (task_id={task_id})")
+
+        manual_task_file.unlink(missing_ok=True)
+
+        return NoteResult(markdown=markdown, transcript=transcript, audio_meta=audio_meta)
 
     def _handle_exception(self, task_id, exc):
         logger.error(f"任务异常 (task_id={task_id})", exc_info=True)
