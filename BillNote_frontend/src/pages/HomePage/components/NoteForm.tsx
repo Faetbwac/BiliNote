@@ -230,8 +230,11 @@ const NoteForm = () => {
   const onSubmit = async (values: NoteFormValues) => {
     console.log('Not even go here')
     const provider = modelList.find(m => m.model_name === values.model_name)
+    // 根据 format 数组设置 screenshot 和 link 参数，保持一致性
     const payload: NoteFormValues & { provider_id?: string } = {
       ...values,
+      screenshot: values.format.includes('screenshot'),
+      link: values.format.includes('link'),
       provider_id: values.skip_ai ? undefined : provider?.provider_id,
       task_id: currentTaskId || '',
     }
@@ -571,7 +574,8 @@ const NoteForm = () => {
                   onChange={field.onChange}
                   disabledMap={{
                     link: platform === 'local',
-                    screenshot: !videoUnderstandingEnabled,
+                    // 截图功能独立于视频理解，可以单独使用
+                    screenshot: false,
                   }}
                 />
                 <FormMessage />
