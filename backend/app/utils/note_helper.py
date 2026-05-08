@@ -46,8 +46,12 @@ def replace_content_markers(markdown: str, video_id: str, platform: str = 'bilib
         total_seconds = int(mm) * 60 + int(ss)
 
         if platform == 'bilibili':
-            parsed_video_id = safe_video_id.replace("_p", "?p=")
-            url = f"https://www.bilibili.com/video/{parsed_video_id}&t={total_seconds}"
+            # 处理分P视频：BVxxx_p2 -> BVxxx?p=2
+            if '_p' in safe_video_id:
+                base_id, p_num = safe_video_id.rsplit('_p', 1)
+                url = f"https://www.bilibili.com/video/{base_id}/?p={p_num}&t={total_seconds}"
+            else:
+                url = f"https://www.bilibili.com/video/{safe_video_id}/?t={total_seconds}"
         elif platform == 'youtube':
             url = f"https://www.youtube.com/watch?v={safe_video_id}&t={total_seconds}s"
         elif platform == 'douyin':
