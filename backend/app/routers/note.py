@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
@@ -47,13 +47,14 @@ class VideoRequest(BaseModel):
     model_name: Optional[str] = None
     provider_id: Optional[str] = None
     task_id: Optional[str] = None
-    format: Optional[list] = []
+    format: Optional[List[str]] = None
     style: Optional[str] = None
     extras: Optional[str]=None
     video_understanding: Optional[bool] = False
     video_interval: Optional[int] = 0
-    grid_size: Optional[list] = []
+    grid_size: Optional[List[int]] = None
     skip_ai: Optional[bool] = False
+    manual_ai: Optional[bool] = False
     # 客户端（如浏览器插件）已经在用户浏览器里抓到字幕，直接传给后端复用，
     # 跳过 download_subtitles 和音频转写。形如：
     #   {"language": "zh", "full_text": "...", "segments": [{"start","end","text"}, ...]}
@@ -118,12 +119,14 @@ def _persist_prefetched_transcript(task_id: str, transcript: dict) -> None:
 
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
-                  _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size=[], skip_ai: bool = False
+                  _format: List[str] = None, style: str = None, extras: str = None, video_understanding: bool = False,
+                  video_interval=0, grid_size: List[int] = None, skip_ai: bool = False, manual_ai: bool = False
                   ):
 
-    if not skip_ai and (not model_name or not provider_id):
+    if not skip_ai and not manual_ai and (not model_name or not provider_id):
         raise HTTPException(status_code=400, detail="请选择模型和提供者")
+
+    logger.info(f"run_note_task 接收参数: manual_ai={manual_ai}, skip_ai={skip_ai}, _format={_format}")
 
     def _execute_note_task():
         if skip_ai:
@@ -143,6 +146,7 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
                 video_interval=video_interval,
                 grid_size=grid_size,
                 skip_ai=True,
+                manual_ai=manual_ai,
             )
         return NoteGenerator().generate(
             video_url=video_url,
@@ -159,9 +163,10 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
             video_understanding=video_understanding,
             video_interval=video_interval,
             grid_size=grid_size,
+            manual_ai=manual_ai,
         )
 
-    logger.info(f"任务进入执行队列 (task_id={task_id})")
+    logger.info(f"任务进入执行队列 (task_id={task_id}, manual_ai={manual_ai}, skip_ai={skip_ai})")
     note = task_serial_executor.run(_execute_note_task)
     logger.info(f"Note generated: {task_id}")
     if not note or not note.markdown:
@@ -233,7 +238,7 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(run_note_task, task_id, data.video_url, data.platform, data.quality, data.link,
                                   data.screenshot, data.model_name, data.provider_id, data.format, data.style,
                                   data.extras, data.video_understanding, data.video_interval, data.grid_size,
-                                  data.skip_ai or False)
+                                  data.skip_ai or False, data.manual_ai or False)
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -449,3 +454,74 @@ async def replace_markdown(request: ReplaceMarkdownRequest):
     except Exception as e:
         logger.error(f"替换笔记失败: {e}")
         return R.fail(msg=f"替换笔记失败: {str(e)}")
+
+
+@router.get("/manual_task")
+async def get_manual_task():
+    """
+    获取最早的手动暂停任务（用户不知道 task_id，所以返回最早的一个）
+
+    :return: 手动任务信息，包含提示词和字幕内容
+    """
+    try:
+        output_dir = Path(NOTE_OUTPUT_DIR)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manual_task_files = list(output_dir.glob("*.manual_task.json"))
+
+        if not manual_task_files:
+            return R.error(msg="没有等待手动导入的任务")
+
+        manual_task_files.sort(key=lambda x: x.stat().st_mtime)
+
+        latest_file = manual_task_files[0]
+        with latest_file.open('r', encoding='utf-8') as f:
+            task_data = json.load(f)
+
+        return R.success(data={
+            "task_id": task_data.get("task_id"),
+            "status": task_data.get("status"),
+            "title": task_data.get("title"),
+            "video_url": task_data.get("video_url"),
+            "platform": task_data.get("platform"),
+            "transcript": task_data.get("transcript"),
+            "prompt": task_data.get("prompt"),
+            "options": task_data.get("options"),
+        })
+
+    except Exception as e:
+        logger.error(f"获取手动任务失败: {e}")
+        return R.error(msg=f"获取手动任务失败: {str(e)}")
+
+
+class ManualTaskContinueRequest(BaseModel):
+    """继续执行手动任务请求"""
+    ai_generated_content: str
+
+
+@router.post("/manual_task/{task_id}/continue")
+async def continue_manual_task(task_id: str, request: ManualTaskContinueRequest):
+    """
+    导入大模型生成的内容，继续执行暂停的任务
+
+    :param task_id: 任务ID
+    :param ai_generated_content: 大模型生成的内容
+    :return: 任务执行结果
+    """
+    try:
+        result = NoteGenerator().continue_manual_task(task_id, request.ai_generated_content)
+
+        if result is None:
+            return R.error(msg="任务继续执行失败")
+
+        return R.success(data={
+            "task_id": task_id,
+            "status": "SUCCESS",
+            "markdown": result.markdown,
+            "title": result.audio_meta.title,
+        })
+
+    except FileNotFoundError as e:
+        return R.error(msg=str(e))
+    except Exception as e:
+        logger.error(f"继续执行手动任务失败: {e}")
+        return R.error(msg=f"继续执行手动任务失败: {str(e)}")
