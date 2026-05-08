@@ -96,6 +96,7 @@ class NoteGenerator:
         video_understanding: bool = False,
         video_interval: int = 0,
         grid_size: Optional[List[int]] = None,
+        skip_ai: bool = False,
     ) -> NoteResult | None:
         """
         主流程：按步骤依次下载、转写、GPT 总结、截图/链接处理、存库、返回 NoteResult。
@@ -121,13 +122,16 @@ class NoteGenerator:
             grid_size = []
 
         try:
-            logger.info(f"开始生成笔记 (task_id={task_id})")
+            logger.info(f"开始生成笔记 (task_id={task_id}, skip_ai={skip_ai})")
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
-
             downloader = self._get_downloader(platform)
-            gpt = self._get_gpt(model_name, provider_id)
+            
+            # 只有在不跳过 AI 时才获取 GPT 实例
+            gpt = None
+            if not skip_ai:
+                gpt = self._get_gpt(model_name, provider_id)
 
             # 缓存文件路径
             audio_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_audio.json"
@@ -199,22 +203,26 @@ class NoteGenerator:
                     task_id=task_id,
                 )
 
-            # 3. GPT 总结
-            markdown = self._summarize_text(
-                audio_meta=audio_meta,
-                transcript=transcript,
-                gpt=gpt,
-                markdown_cache_file=markdown_cache_file,
-                link=link,
-                screenshot=screenshot,
-                formats=_format or [],
-                style=style,
-                extras=extras,
-                video_img_urls=self.video_img_urls,
-            )
+            # 3. GPT 总结（如果 skip_ai 为 True，则直接使用字幕内容）
+            if skip_ai:
+                # 直接使用字幕内容，不调用 AI
+                markdown = f"# 视频字幕\n\n{transcript.full_text}" if transcript else "# 无字幕内容"
+            else:
+                markdown = self._summarize_text(
+                    audio_meta=audio_meta,
+                    transcript=transcript,
+                    gpt=gpt,
+                    markdown_cache_file=markdown_cache_file,
+                    link=link,
+                    screenshot=screenshot,
+                    formats=_format or [],
+                    style=style,
+                    extras=extras,
+                    video_img_urls=self.video_img_urls,
+                )
 
             # 4. 截图 & 链接替换
-            if _format:
+            if _format and not skip_ai:
                 markdown = self._post_process_markdown(
                     markdown=markdown,
                     video_path=self.video_path,

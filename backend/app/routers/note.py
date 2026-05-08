@@ -2,6 +2,7 @@
 import json
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -19,6 +20,8 @@ from app.services.task_serial_executor import task_serial_executor
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
 from app.validators.video_url_validator import is_supported_video_url
+from app.gpt.prompt_builder import generate_base_prompt
+from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK, MERGE_PROMPT
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
@@ -41,15 +44,16 @@ class VideoRequest(BaseModel):
     quality: DownloadQuality
     screenshot: Optional[bool] = False
     link: Optional[bool] = False
-    model_name: str
-    provider_id: str
+    model_name: Optional[str] = None
+    provider_id: Optional[str] = None
     task_id: Optional[str] = None
     format: Optional[list] = []
-    style: str = None
+    style: Optional[str] = None
     extras: Optional[str]=None
     video_understanding: Optional[bool] = False
     video_interval: Optional[int] = 0
     grid_size: Optional[list] = []
+    skip_ai: Optional[bool] = False
     # 客户端（如浏览器插件）已经在用户浏览器里抓到字幕，直接传给后端复用，
     # 跳过 download_subtitles 和音频转写。形如：
     #   {"language": "zh", "full_text": "...", "segments": [{"start","end","text"}, ...]}
@@ -115,13 +119,31 @@ def _persist_prefetched_transcript(task_id: str, transcript: dict) -> None:
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size=[]
+                  video_interval=0, grid_size=[], skip_ai: bool = False
                   ):
 
-    if not model_name or not provider_id:
+    if not skip_ai and (not model_name or not provider_id):
         raise HTTPException(status_code=400, detail="请选择模型和提供者")
 
     def _execute_note_task():
+        if skip_ai:
+            return NoteGenerator().generate(
+                video_url=video_url,
+                platform=platform,
+                quality=quality,
+                task_id=task_id,
+                model_name=None,
+                provider_id=None,
+                link=link,
+                _format=_format,
+                style=None,
+                extras=None,
+                screenshot=screenshot,
+                video_understanding=video_understanding,
+                video_interval=video_interval,
+                grid_size=grid_size,
+                skip_ai=True,
+            )
         return NoteGenerator().generate(
             video_url=video_url,
             platform=platform,
@@ -210,7 +232,8 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
 
         background_tasks.add_task(run_note_task, task_id, data.video_url, data.platform, data.quality, data.link,
                                   data.screenshot, data.model_name, data.provider_id, data.format, data.style,
-                                  data.extras, data.video_understanding, data.video_interval, data.grid_size)
+                                  data.extras, data.video_understanding, data.video_interval, data.grid_size,
+                                  data.skip_ai or False)
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -301,3 +324,128 @@ async def image_proxy(request: Request, url: str):
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class GeneratePromptRequest(BaseModel):
+    """生成提示词请求"""
+    task_id: str
+    title: str = ""
+    tags: list = []
+    style: str = "detailed"
+    formats: list = ["link", "summary"]
+
+
+class ReplaceMarkdownRequest(BaseModel):
+    """替换笔记内容请求"""
+    task_id: str
+    markdown: str
+
+
+@router.post("/generate_prompt")
+async def generate_prompt(request: GeneratePromptRequest):
+    """
+    根据任务ID生成用于手动调用大模型的提示词
+    
+    :param task_id: 任务ID
+    :param title: 视频标题（可选）
+    :param tags: 视频标签列表
+    :param style: 笔记风格（minimal/detailed/academic/tutorial/xiaohongshu等）
+    :param formats: 输出格式选项（link/screenshot/summary/toc）
+    :return: 包含提示词的响应
+    """
+    try:
+        # 读取字幕缓存文件
+        transcript_file = Path(NOTE_OUTPUT_DIR) / f"{request.task_id}_transcript.json"
+        if not transcript_file.exists():
+            return R.fail(msg="字幕文件不存在，请先生成字幕")
+        
+        with open(transcript_file, 'r', encoding='utf-8') as f:
+            transcript_data = json.load(f)
+        
+        # 构建分段文本（带时间戳）
+        segments = transcript_data.get("segments", [])
+        if not segments:
+            return R.fail(msg="字幕内容为空")
+        
+        segment_text = ""
+        for seg in segments:
+            start = seg.get("start", 0)
+            # 转换为 mm:ss 格式
+            minutes = int(start // 60)
+            seconds = int(start % 60)
+            time_str = f"{minutes:02d}:{seconds:02d}"
+            text = seg.get("text", "").strip()
+            if text:
+                segment_text += f"{time_str} - {text}\n\n"
+        
+        # 生成提示词
+        prompt = generate_base_prompt(
+            title=request.title or "未命名视频",
+            segment_text=segment_text.strip(),
+            tags=request.tags,
+            _format=request.formats,
+            style=request.style,
+            extras=None
+        )
+        
+        return R.success(data={
+            "prompt": prompt,
+            "task_id": request.task_id,
+            "segment_count": len(segments),
+            "prompt_length": len(prompt)
+        })
+    
+    except Exception as e:
+        logger.error(f"生成提示词失败: {e}")
+        return R.fail(msg=f"生成提示词失败: {str(e)}")
+
+
+@router.post("/replace_markdown")
+async def replace_markdown(request: ReplaceMarkdownRequest):
+    """
+    将手动调用大模型的结果替换到笔记中
+    
+    :param task_id: 任务ID
+    :param markdown: 大模型返回的Markdown内容
+    :return: 替换结果
+    """
+    try:
+        # 更新markdown缓存文件
+        markdown_file = Path(NOTE_OUTPUT_DIR) / f"{request.task_id}_markdown.md"
+        markdown_file.write_text(request.markdown, encoding="utf-8")
+        
+        # 更新.json结果文件（get_task_status读取的是这个文件）
+        result_path = os.path.join(NOTE_OUTPUT_DIR, f"{request.task_id}.json")
+        result_content = {
+            "markdown": [{
+                "ver_id": f"{request.task_id}-manual",
+                "content": request.markdown,
+                "style": "manual",
+                "model_name": "manual",
+                "created_at": datetime.now().isoformat()
+            }],
+            "transcript": {"full_text": "", "language": "", "raw": {}, "segments": []},
+            "audio_meta": {"title": "手动替换", "platform": "", "video_id": ""}
+        }
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(result_content, f, ensure_ascii=False, indent=2)
+        
+        # 更新状态文件为SUCCESS
+        status_file = Path(NOTE_OUTPUT_DIR) / f"{request.task_id}_status.json"
+        if status_file.exists():
+            with open(status_file, 'r', encoding='utf-8') as f:
+                status_data = json.load(f)
+            status_data["status"] = "SUCCESS"
+            status_data["message"] = "手动替换完成"
+            with open(status_file, 'w', encoding='utf-8') as f:
+                json.dump(status_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"笔记内容已手动替换: {request.task_id}")
+        return R.success(data={
+            "task_id": request.task_id,
+            "markdown_length": len(request.markdown)
+        })
+    
+    except Exception as e:
+        logger.error(f"替换笔记失败: {e}")
+        return R.fail(msg=f"替换笔记失败: {str(e)}")
