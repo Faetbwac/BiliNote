@@ -1,11 +1,21 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Copy, Download, BrainCircuit, MessageSquare } from 'lucide-react'
+import { Copy, Download, BrainCircuit, MessageSquare, Wand2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
+import { toast } from 'react-hot-toast'
+import { useTaskStore } from '@/store/taskStore'
 
 interface VersionNote {
   ver_id: string
@@ -17,6 +27,14 @@ interface VersionNote {
 interface NoteHeaderProps {
   currentTask?: {
     markdown: VersionNote[] | string
+    id: string
+    formData: {
+      video_url: string
+      style: string
+    }
+    audioMeta?: {
+      title: string
+    }
   }
   isMultiVersion: boolean
   currentVerId: string
@@ -30,6 +48,9 @@ interface NoteHeaderProps {
   setShowTranscribe: (show: boolean) => void
   showChat?: false | 'half' | 'full'
   setShowChat?: (mode: false | 'half' | 'full') => void
+  viewMode: 'map' | 'preview'
+  setViewMode: (mode: 'map' | 'preview') => void
+  showTranscribe: boolean
 }
 
 export function MarkdownHeader({
@@ -51,6 +72,13 @@ export function MarkdownHeader({
   setViewMode,
 }: NoteHeaderProps) {
   const [copied, setCopied] = useState(false)
+  const [showPromptDialog, setShowPromptDialog] = useState(false)
+  const [prompt, setPrompt] = useState('')
+  const [customMarkdown, setCustomMarkdown] = useState('')
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [isReplacing, setIsReplacing] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const updateTaskContent = useTaskStore.getState().updateTaskContent
 
   useEffect(() => {
     let timer: NodeJS.Timeout
@@ -63,6 +91,115 @@ export function MarkdownHeader({
   const handleCopy = () => {
     onCopy()
     setCopied(true)
+  }
+
+  // 生成提示词
+  const handleGeneratePrompt = async () => {
+    if (!currentTask?.id) return
+    setIsGenerating(true)
+    try {
+      const response = await fetch('/api/generate_prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          task_id: currentTask.id,
+          title: currentTask.audioMeta?.title || '',
+          tags: [],
+          style: currentTask.formData.style || 'detailed',
+          formats: ['link', 'summary'],
+        }),
+      })
+      const result = await response.json()
+      if (result.code === 0) {
+        setPrompt(result.data.prompt)
+        toast.success('提示词生成成功')
+      } else {
+        toast.error(result.msg || '生成失败')
+      }
+    } catch (error) {
+      toast.error('生成提示词失败')
+      console.error(error)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  // 复制提示词
+  const handleCopyPrompt = async () => {
+    if (!prompt) return
+    try {
+      await navigator.clipboard.writeText(prompt)
+      toast.success('提示词已复制到剪贴板')
+    } catch (error) {
+      toast.error('复制失败')
+    }
+  }
+
+  // 替换笔记内容
+  const handleReplaceMarkdown = async () => {
+    if (!currentTask?.id || !customMarkdown.trim()) {
+      toast.error('请输入内容')
+      return
+    }
+    setIsReplacing(true)
+    try {
+      const response = await fetch('/api/replace_markdown', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          task_id: currentTask.id,
+          markdown: customMarkdown.trim(),
+        }),
+      })
+      const result = await response.json()
+      if (result.code === 0) {
+        toast.success('笔记替换成功')
+        setCustomMarkdown('')
+        setShowPromptDialog(false)
+        // 更新本地任务状态（不传入status，避免被过滤）
+        updateTaskContent(currentTask.id, {
+          markdown: customMarkdown.trim(),
+        })
+      } else {
+        toast.error(result.msg || '替换失败')
+      }
+    } catch (error) {
+      toast.error('替换笔记失败')
+      console.error(error)
+    } finally {
+      setIsReplacing(false)
+    }
+  }
+
+  // 刷新任务内容（从后端重新获取）
+  const handleRefreshTask = async () => {
+    if (!currentTask?.id) return
+    setIsRefreshing(true)
+    try {
+      const response = await fetch(`/api/task_status/${currentTask.id}`)
+      const result = await response.json()
+      if (result.code === 0 && result.data.status === 'SUCCESS') {
+        const { markdown, transcript, audio_meta } = result.data.result
+        updateTaskContent(currentTask.id, {
+          status: 'SUCCESS',
+          markdown,
+          transcript,
+          audioMeta: audio_meta,
+        })
+        toast.success('笔记已刷新')
+      } else {
+        toast.error(result.msg || '刷新失败')
+      }
+    } catch (error) {
+      toast.error('刷新笔记失败')
+      console.error(error)
+    } finally {
+      setIsRefreshing(false)
+    }
   }
 
   const styleName = noteStyles.find(v => v.value === style)?.label || style
@@ -187,6 +324,108 @@ export function MarkdownHeader({
             <TooltipContent>原文参照</TooltipContent>
           </Tooltip>
         </TooltipProvider>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={handleRefreshTask}
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2"
+                disabled={isRefreshing}
+              >
+                <RefreshCw className={`mr-1.5 h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span className="text-sm">刷新</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>从服务器刷新笔记</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <Dialog open={showPromptDialog} onOpenChange={setShowPromptDialog}>
+          <DialogTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-8 px-2">
+              <Wand2 className="mr-1.5 h-4 w-4" />
+              <span className="text-sm">手动调用AI</span>
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-4xl max-h-[80vh]">
+            <DialogHeader>
+              <DialogTitle>手动调用大模型</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 mt-4">
+              {/* 提示词生成区域 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">生成的提示词</label>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleGeneratePrompt}
+                      disabled={isGenerating}
+                    >
+                      {isGenerating ? '生成中...' : '生成提示词'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCopyPrompt}
+                      disabled={!prompt}
+                    >
+                      <Copy className="mr-1 h-3 w-3" />
+                      复制
+                    </Button>
+                  </div>
+                </div>
+                <Textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="点击上方按钮生成提示词，然后复制到大模型中..."
+                  className="h-40 font-mono text-xs"
+                  disabled={isGenerating}
+                />
+              </div>
+
+              {/* 分割线 */}
+              <div className="border-t border-muted" />
+
+              {/* 结果输入区域 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">
+                    将大模型返回的结果粘贴到这里
+                  </label>
+                  <Button
+                    size="sm"
+                    onClick={handleReplaceMarkdown}
+                    disabled={isReplacing || !customMarkdown.trim()}
+                  >
+                    {isReplacing ? '替换中...' : '替换笔记'}
+                  </Button>
+                </div>
+                <Textarea
+                  value={customMarkdown}
+                  onChange={(e) => setCustomMarkdown(e.target.value)}
+                  placeholder="将大模型返回的Markdown内容粘贴到这里..."
+                  className="h-40 font-mono text-xs"
+                  disabled={isReplacing}
+                />
+              </div>
+
+              {/* 说明 */}
+              <div className="bg-muted/50 rounded-lg p-3 text-xs text-muted-foreground">
+                <p className="font-medium mb-1">使用说明：</p>
+                <ol className="list-decimal list-inside space-y-1">
+                  <li>点击「生成提示词」按钮生成用于调用大模型的提示词</li>
+                  <li>复制提示词到你选择的大模型中（如 ChatGPT、Claude 等）</li>
+                  <li>将大模型返回的结果粘贴到下方输入框</li>
+                  <li>点击「替换笔记」按钮将结果保存到当前笔记中</li>
+                </ol>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {setShowChat && (
           <TooltipProvider>
             <Tooltip>
