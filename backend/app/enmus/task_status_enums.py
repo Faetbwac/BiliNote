@@ -11,6 +11,7 @@ class TaskStatus(str, enum.Enum):
     SAVING = "SAVING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+    MANUAL_PENDING = "MANUAL_PENDING"
 
     @classmethod
     def description(cls, status):
@@ -24,5 +25,6 @@ class TaskStatus(str, enum.Enum):
             cls.SAVING: "保存中",
             cls.SUCCESS: "完成",
             cls.FAILED: "失败",
+            cls.MANUAL_PENDING: "等待手动导入",
         }
         return desc_map.get(status, "未知状态")
