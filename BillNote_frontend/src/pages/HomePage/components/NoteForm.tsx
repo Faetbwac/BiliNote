@@ -59,6 +59,7 @@ const formSchema = z
       .default([2, 2])
       .optional(),
     skip_ai: z.boolean().default(false),
+    manual_ai: z.boolean().default(false),
   })
   .superRefine(({ video_url, platform, model_name, style, skip_ai }, ctx) => {
     if (platform === 'local') {
@@ -228,7 +229,8 @@ const NoteForm = () => {
   }
 
   const onSubmit = async (values: NoteFormValues) => {
-    console.log('Not even go here')
+    console.log('表单提交 values:', values)
+    console.log('manual_ai 值:', values.manual_ai)
     const provider = modelList.find(m => m.model_name === values.model_name)
     // 根据 format 数组设置 screenshot 和 link 参数，保持一致性
     const payload: NoteFormValues & { provider_id?: string } = {
@@ -238,6 +240,7 @@ const NoteForm = () => {
       provider_id: values.skip_ai ? undefined : provider?.provider_id,
       task_id: currentTaskId || '',
     }
+    console.log('提交 payload:', payload)
     if (currentTaskId) {
       retryTask(currentTaskId, payload)
       return
@@ -554,6 +557,32 @@ const NoteForm = () => {
                   <Alert variant="info" className="text-sm mt-2">
                     <AlertDescription>
                       启用后将只提取字幕并保存，不调用 AI 生成笔记，无需配置 LLM。
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 手动 AI 模式 */}
+          <FormField
+            control={form.control}
+            name="manual_ai"
+            render={({ field }) => (
+              <FormItem>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    disabled={skipAi}
+                  />
+                  <FormLabel className="text-base">手动 AI 模式</FormLabel>
+                </div>
+                {field.value && (
+                  <Alert variant="info" className="text-sm mt-2">
+                    <AlertDescription>
+                      启用后将只提取字幕并暂停，用户可手动复制提示词到其他 AI 工具，导入结果后继续执行。
                     </AlertDescription>
                   </Alert>
                 )}
