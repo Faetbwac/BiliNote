@@ -208,6 +208,11 @@ class NoteGenerator:
                 # 直接使用字幕内容，不调用 AI
                 markdown = f"# 视频字幕\n\n{transcript.full_text}" if transcript else "# 无字幕内容"
             else:
+                # 只有在启用视频理解时才传递视频缩略图给 GPT
+                # 截图功能不需要传递图片给 GPT，只在后期处理时插入截图
+                # 非多模态模型（如 DeepSeek）不支持 image_url 格式
+                img_urls = self.video_img_urls if video_understanding else []
+                
                 markdown = self._summarize_text(
                     audio_meta=audio_meta,
                     transcript=transcript,
@@ -218,7 +223,7 @@ class NoteGenerator:
                     formats=_format or [],
                     style=style,
                     extras=extras,
-                    video_img_urls=self.video_img_urls,
+                    video_img_urls=img_urls,
                 )
 
             # 4. 截图 & 链接替换
@@ -431,9 +436,9 @@ class NoteGenerator:
                 logger.warning(f"元信息提取失败，将尝试完整下载: {exc}")
 
         # 判断是否需要下载视频
+        logger.info(f"截图参数检查 - screenshot={screenshot}, video_understanding={video_understanding}, grid_size={grid_size}")
         need_video = screenshot or video_understanding
-        if screenshot and not grid_size:
-            grid_size = [2, 2]
+        logger.info(f"need_video 计算结果: {need_video}")
 
         frame_interval = video_interval if video_interval and video_interval > 0 else 6
         if need_video:
@@ -443,7 +448,10 @@ class NoteGenerator:
                 self.video_path = Path(video_path_str)
                 logger.info(f"视频下载完成：{self.video_path}")
 
-                if grid_size:
+                # 只有视频理解功能需要生成缩略图，截图功能不需要
+                # 截图功能只在后期处理时根据时间标记截取特定帧
+                if video_understanding and grid_size:
+                    logger.info("视频理解启用，生成缩略图")
                     self.video_img_urls = VideoReader(
                         video_path=str(self.video_path),
                         grid_size=tuple(grid_size),
