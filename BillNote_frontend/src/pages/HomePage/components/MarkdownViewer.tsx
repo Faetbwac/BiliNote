@@ -308,7 +308,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
         setCurrentVerId(latestVersion.ver_id)
       }
     }
-  }, [currentTask?.id, taskStatus])
+  }, [currentTask?.id, taskStatus, currentTask?.markdown])
   useEffect(() => {
     if (!currentTask || !isMultiVersion) return
 
