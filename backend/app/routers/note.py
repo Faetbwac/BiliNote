@@ -53,7 +53,6 @@ class VideoRequest(BaseModel):
     video_understanding: Optional[bool] = False
     video_interval: Optional[int] = 0
     grid_size: Optional[List[int]] = None
-    skip_ai: Optional[bool] = False
     manual_ai: Optional[bool] = False
     # 客户端（如浏览器插件）已经在用户浏览器里抓到字幕，直接传给后端复用，
     # 跳过 download_subtitles 和音频转写。形如：
@@ -120,45 +119,26 @@ def _persist_prefetched_transcript(task_id: str, transcript: dict) -> None:
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: List[str] = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size: List[int] = None, skip_ai: bool = False, manual_ai: bool = False
+                  video_interval=0, grid_size: List[int] = None, manual_ai: bool = False
                   ):
 
-    if not skip_ai and not manual_ai and (not model_name or not provider_id):
+    if not manual_ai and (not model_name or not provider_id):
         raise HTTPException(status_code=400, detail="请选择模型和提供者")
 
-    logger.info(f"run_note_task 接收参数: manual_ai={manual_ai}, skip_ai={skip_ai}, _format={_format}")
+    logger.info(f"run_note_task 接收参数: manual_ai={manual_ai}, _format={_format}")
 
     def _execute_note_task():
-        if skip_ai:
-            return NoteGenerator().generate(
-                video_url=video_url,
-                platform=platform,
-                quality=quality,
-                task_id=task_id,
-                model_name=None,
-                provider_id=None,
-                link=link,
-                _format=_format,
-                style=None,
-                extras=None,
-                screenshot=screenshot,
-                video_understanding=video_understanding,
-                video_interval=video_interval,
-                grid_size=grid_size,
-                skip_ai=True,
-                manual_ai=manual_ai,
-            )
         return NoteGenerator().generate(
             video_url=video_url,
             platform=platform,
             quality=quality,
             task_id=task_id,
-            model_name=model_name,
-            provider_id=provider_id,
+            model_name=model_name if not manual_ai else None,
+            provider_id=provider_id if not manual_ai else None,
             link=link,
             _format=_format,
-            style=style,
-            extras=extras,
+            style=style if not manual_ai else None,
+            extras=extras if not manual_ai else None,
             screenshot=screenshot,
             video_understanding=video_understanding,
             video_interval=video_interval,
@@ -166,7 +146,7 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
             manual_ai=manual_ai,
         )
 
-    logger.info(f"任务进入执行队列 (task_id={task_id}, manual_ai={manual_ai}, skip_ai={skip_ai})")
+    logger.info(f"任务进入执行队列 (task_id={task_id}, manual_ai={manual_ai})")
     note = task_serial_executor.run(_execute_note_task)
     logger.info(f"Note generated: {task_id}")
     if not note or not note.markdown:
@@ -238,7 +218,7 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(run_note_task, task_id, data.video_url, data.platform, data.quality, data.link,
                                   data.screenshot, data.model_name, data.provider_id, data.format, data.style,
                                   data.extras, data.video_understanding, data.video_interval, data.grid_size,
-                                  data.skip_ai or False, data.manual_ai or False)
+                                  data.manual_ai or False)
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

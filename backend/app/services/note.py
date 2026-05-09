@@ -96,7 +96,6 @@ class NoteGenerator:
         video_understanding: bool = False,
         video_interval: int = 0,
         grid_size: Optional[List[int]] = None,
-        skip_ai: bool = False,
         manual_ai: bool = False,
     ) -> NoteResult | None:
         """
@@ -123,15 +122,15 @@ class NoteGenerator:
             grid_size = []
 
         try:
-            logger.info(f"开始生成笔记 (task_id={task_id}, skip_ai={skip_ai}, manual_ai={manual_ai})")
+            logger.info(f"开始生成笔记 (task_id={task_id}, manual_ai={manual_ai})")
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
             downloader = self._get_downloader(platform)
             
-            # 只有在不跳过 AI 时才获取 GPT 实例
+            # 只有在不使用手动 AI 时才获取 GPT 实例
             gpt = None
-            if not skip_ai:
+            if not manual_ai:
                 gpt = self._get_gpt(model_name, provider_id)
 
             # 缓存文件路径
@@ -224,31 +223,27 @@ class NoteGenerator:
                 logger.info(f"手动 AI 模式：任务暂停等待导入 (task_id={task_id})")
                 return None
 
-            # 3. GPT 总结（如果 skip_ai 为 True，则直接使用字幕内容）
-            if skip_ai:
-                # 直接使用字幕内容，不调用 AI
-                markdown = f"# 视频字幕\n\n{transcript.full_text}" if transcript else "# 无字幕内容"
-            else:
-                # 只有在启用视频理解时才传递视频缩略图给 GPT
-                # 截图功能不需要传递图片给 GPT，只在后期处理时插入截图
-                # 非多模态模型（如 DeepSeek）不支持 image_url 格式
-                img_urls = self.video_img_urls if video_understanding else []
-                
-                markdown = self._summarize_text(
-                    audio_meta=audio_meta,
-                    transcript=transcript,
-                    gpt=gpt,
-                    markdown_cache_file=markdown_cache_file,
-                    link=link,
-                    screenshot=screenshot,
-                    formats=_format or [],
-                    style=style,
-                    extras=extras,
-                    video_img_urls=img_urls,
-                )
+            # 3. GPT 总结
+            # 只有在启用视频理解时才传递视频缩略图给 GPT
+            # 截图功能不需要传递图片给 GPT，只在后期处理时插入截图
+            # 非多模态模型（如 DeepSeek）不支持 image_url 格式
+            img_urls = self.video_img_urls if video_understanding else []
+            
+            markdown = self._summarize_text(
+                audio_meta=audio_meta,
+                transcript=transcript,
+                gpt=gpt,
+                markdown_cache_file=markdown_cache_file,
+                link=link,
+                screenshot=screenshot,
+                formats=_format or [],
+                style=style,
+                extras=extras,
+                video_img_urls=img_urls,
+            )
 
             # 4. 截图 & 链接替换
-            if _format and not skip_ai:
+            if _format:
                 markdown = self._post_process_markdown(
                     markdown=markdown,
                     video_path=self.video_path,

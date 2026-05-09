@@ -58,10 +58,9 @@ const formSchema = z
       .tuple([z.coerce.number().min(1).max(10), z.coerce.number().min(1).max(10)])
       .default([2, 2])
       .optional(),
-    skip_ai: z.boolean().default(false),
     manual_ai: z.boolean().default(false),
   })
-  .superRefine(({ video_url, platform, model_name, style, skip_ai }, ctx) => {
+  .superRefine(({ video_url, platform, model_name, style, manual_ai }, ctx) => {
     if (platform === 'local') {
       if (!video_url) {
         ctx.addIssue({ code: 'custom', message: '本地视频路径不能为空', path: ['video_url'] })
@@ -82,8 +81,8 @@ const formSchema = z
         }
       }
     }
-    // 只有在不跳过 AI 时才需要校验模型和风格
-    if (!skip_ai) {
+    // 只有在不使用手动 AI 时才需要校验模型和风格
+    if (!manual_ai) {
       if (!model_name) {
         ctx.addIssue({ code: 'custom', message: '请选择模型', path: ['model_name'] })
       }
@@ -165,7 +164,7 @@ const NoteForm = () => {
   /* ---- 派生状态（只 watch 一次，提高性能） ---- */
   const platform = useWatch({ control: form.control, name: 'platform' }) as string
   const videoUnderstandingEnabled = useWatch({ control: form.control, name: 'video_understanding' })
-  const skipAi = useWatch({ control: form.control, name: 'skip_ai' })
+  const manualAi = useWatch({ control: form.control, name: 'manual_ai' })
   const editing = currentTask && currentTask.id
 
   const goModelAdd = () => {
@@ -237,7 +236,7 @@ const NoteForm = () => {
       ...values,
       screenshot: values.format.includes('screenshot'),
       link: values.format.includes('link'),
-      provider_id: values.skip_ai ? undefined : provider?.provider_id,
+      provider_id: values.manual_ai ? undefined : provider?.provider_id,
       task_id: currentTaskId || '',
     }
     console.log('提交 payload:', payload)
@@ -403,7 +402,7 @@ const NoteForm = () => {
                  <FormItem>
                    <SectionHeader title="模型选择" tip="不同模型效果不同，建议自行测试" />
                    <Select
-                     disabled={skipAi}
+                     disabled={manualAi}
                      onOpenChange={()=>{
                        loadEnabledModels()
                      }}
@@ -432,7 +431,7 @@ const NoteForm = () => {
                  <SectionHeader title="模型选择" tip="不同模型效果不同，建议自行测试" />
                   <Button type={'button'} variant={
                     'outline'
-                  } onClick={()=>{goModelAdd()}} disabled={skipAi}>请先添加模型</Button>
+                  } onClick={()=>{goModelAdd()}} disabled={manualAi}>请先添加模型</Button>
                  <FormMessage />
                </FormItem>
              )
@@ -447,7 +446,7 @@ const NoteForm = () => {
                 <FormItem>
                   <SectionHeader title="笔记风格" tip="选择生成笔记的呈现风格" />
                   <Select
-                    disabled={skipAi}
+                    disabled={manualAi}
                     value={field.value}
                     onValueChange={field.onChange}
                     defaultValue={field.value}
@@ -456,8 +455,8 @@ const NoteForm = () => {
                       <SelectTrigger className="w-full min-w-0 truncate">
                         <SelectValue />
                       </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
+                     </FormControl>
+                     <SelectContent>
                       {noteStyles.map(({ label, value }) => (
                         <SelectItem key={value} value={value}>
                           {label}
@@ -481,7 +480,7 @@ const NoteForm = () => {
                   <div className="flex items-center gap-2">
                     <FormLabel>启用</FormLabel>
                     <Checkbox
-                      disabled={skipAi}
+                      disabled={manualAi}
                       checked={videoUnderstandingEnabled}
                       onCheckedChange={v => form.setValue('video_understanding', v)}
                     />
@@ -540,31 +539,6 @@ const NoteForm = () => {
             </Alert>
           </div>
 
-          {/* 只保存字幕开关 */}
-          <FormField
-            control={form.control}
-            name="skip_ai"
-            render={({ field }) => (
-              <FormItem>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                  <FormLabel className="text-base">只保存字幕（跳过 AI 总结）</FormLabel>
-                </div>
-                {field.value && (
-                  <Alert variant="info" className="text-sm mt-2">
-                    <AlertDescription>
-                      启用后将只提取字幕并保存，不调用 AI 生成笔记，无需配置 LLM。
-                    </AlertDescription>
-                  </Alert>
-                )}
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
           {/* 手动 AI 模式 */}
           <FormField
             control={form.control}
@@ -575,7 +549,6 @@ const NoteForm = () => {
                   <Checkbox
                     checked={field.value}
                     onCheckedChange={field.onChange}
-                    disabled={skipAi}
                   />
                   <FormLabel className="text-base">手动 AI 模式</FormLabel>
                 </div>
