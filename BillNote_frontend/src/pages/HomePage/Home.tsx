@@ -8,6 +8,7 @@ type ViewStatus = 'idle' | 'loading' | 'success' | 'failed'
 export const HomePage: FC = () => {
   const tasks = useTaskStore(state => state.tasks)
   const currentTaskId = useTaskStore(state => state.currentTaskId)
+  const syncTasksFromBackend = useTaskStore(state => state.syncTasksFromBackend)
 
   const currentTask = tasks.find(t => t.id === currentTaskId)
 
@@ -28,12 +29,10 @@ export const HomePage: FC = () => {
     }
   }, [currentTask, currentTask?.status])
 
-  // useEffect( () => {
-  //     get_task_status('d4e87938-c066-48a0-bbd5-9bec40d53354').then(res=>{
-  //         console.log('res1',res)
-  //         setContent(res.data.result.markdown)
-  //     })
-  // }, [tasks]);
+  useEffect(() => {
+    syncTasksFromBackend()
+  }, [])
+
   return (
     <HomeLayout
       NoteForm={<NoteForm />}

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { delete_task, generateNote } from '@/services/note.ts'
+import { delete_task, generateNote, get_all_tasks } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -66,6 +66,7 @@ interface TaskStore {
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
   retryTask: (id: string) => void
+  syncTasksFromBackend: () => void
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -202,6 +203,7 @@ export const useTaskStore = create<TaskStore>()(
           await delete_task({
             video_id: task.audioMeta.video_id,
             platform: task.platform,
+            task_id: id,
           })
         }
       },
@@ -209,6 +211,58 @@ export const useTaskStore = create<TaskStore>()(
       clearTasks: () => set({ tasks: [], currentTaskId: null }),
 
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
+
+      syncTasksFromBackend: async () => {
+        try {
+          const response = await get_all_tasks()
+          if (response && response.code === 0 && response.data) {
+            const backendTasks = response.data.map((backendTask: any) => {
+              const audioMeta = backendTask.audio_meta || {}
+              return {
+                id: backendTask.task_id,
+                status: (backendTask.status === 'SUCCESS' ? 'SUCCESS' : 'PENDING') as TaskStatus,
+                markdown: backendTask.markdown || '',
+                createdAt: backendTask.created_at || new Date().toISOString(),
+                platform: audioMeta.platform || '',
+                audioMeta: {
+                  cover_url: audioMeta.cover_url || '',
+                  duration: audioMeta.duration || 0,
+                  file_path: audioMeta.file_path || '',
+                  platform: audioMeta.platform || '',
+                  raw_info: audioMeta.raw_info || null,
+                  title: audioMeta.title || '未命名笔记',
+                  video_id: audioMeta.video_id || '',
+                },
+                transcript: {
+                  full_text: '',
+                  language: '',
+                  raw: null,
+                  segments: [],
+                },
+                formData: {
+                  video_url: '',
+                  link: undefined,
+                  screenshot: undefined,
+                  platform: audioMeta.platform || '',
+                  quality: 'high',
+                  model_name: '',
+                  provider_id: '',
+                },
+              }
+            })
+
+            set(state => {
+              const existingTaskIds = new Set(state.tasks.map(t => t.id))
+              const newTasks = backendTasks.filter(t => !existingTaskIds.has(t.id))
+              return {
+                tasks: [...newTasks, ...state.tasks],
+              }
+            })
+          }
+        } catch (error) {
+          console.error('❌ 同步任务列表失败:', error)
+        }
+      },
     }),
     {
       name: 'task-storage',

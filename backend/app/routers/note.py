@@ -34,8 +34,9 @@ router = APIRouter()
 
 
 class RecordRequest(BaseModel):
-    video_id: str
-    platform: str
+    video_id: Optional[str] = None
+    platform: Optional[str] = None
+    task_id: Optional[str] = None
 
 
 class VideoRequest(BaseModel):
@@ -137,7 +138,7 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
             provider_id=provider_id if not manual_ai else None,
             link=link,
             _format=_format,
-            style=style if not manual_ai else None,
+            style=style,
             extras=extras if not manual_ai else None,
             screenshot=screenshot,
             video_understanding=video_understanding,
@@ -165,11 +166,37 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
 @router.post('/delete_task')
 def delete_task(data: RecordRequest):
     try:
-        # TODO: 待持久化完成
-        # NoteGenerator().delete_note(video_id=data.video_id, platform=data.platform)
-        return R.success(msg='删除成功')
+        output_dir = Path(NOTE_OUTPUT_DIR)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        deleted_count = 0
+        
+        # 根据 task_id 删除相关文件
+        if data.task_id:
+            task_id = data.task_id
+            # 删除所有 task_id 相关的文件
+            patterns = [
+                f"{task_id}*.json",
+                f"{task_id}*.md",
+            ]
+            for pattern in patterns:
+                for file_path in output_dir.glob(pattern):
+                    try:
+                        file_path.unlink()
+                        logger.info(f"已删除文件: {file_path.name}")
+                        deleted_count += 1
+                    except Exception as e:
+                        logger.warning(f"删除文件失败 {file_path.name}: {e}")
+        
+        # 或者根据 video_id + platform 删除
+        elif data.video_id and data.platform:
+            # 这种方式较难定位，因为文件名是 task_id
+            logger.warning(f"按 video_id + platform 删除功能暂未完全实现: {data.video_id}")
+            # TODO: 实现通过 metadata 查找 task_id 的功能
+        
+        return R.success(msg=f'删除成功，已删除 {deleted_count} 个文件')
     except Exception as e:
-        return R.error(msg=e)
+        logger.error(f"删除任务失败: {e}")
+        return R.error(msg=f"删除任务失败: {str(e)}")
 
 
 @router.post("/upload")
@@ -449,7 +476,7 @@ async def get_manual_task():
         manual_task_files = list(output_dir.glob("*.manual_task.json"))
 
         if not manual_task_files:
-            return R.error(msg="没有等待手动导入的任务")
+            return R.error(msg="没有等待手动导入的任务", code=404)
 
         manual_task_files.sort(key=lambda x: x.stat().st_mtime)
 
@@ -505,3 +532,57 @@ async def continue_manual_task(task_id: str, request: ManualTaskContinueRequest)
     except Exception as e:
         logger.error(f"继续执行手动任务失败: {e}")
         return R.error(msg=f"继续执行手动任务失败: {str(e)}")
+
+
+@router.get("/tasks")
+async def get_all_tasks():
+    """获取所有任务列表"""
+    import os
+    
+    tasks = []
+    
+    try:
+        output_dir = Path(NOTE_OUTPUT_DIR)
+        for status_file in output_dir.glob("*.status.json"):
+            if "_markdown" in str(status_file.name):
+                continue
+            
+            task_id = status_file.stem.replace(".status", "")
+            
+            with open(status_file, "r", encoding="utf-8") as f:
+                status_data = json.load(f)
+            
+            if not isinstance(status_data, dict):
+                logger.warning(f"状态文件内容不是字典: {status_file.name}")
+                continue
+            
+            status = status_data.get("status", "PENDING")
+            
+            result_path = output_dir / f"{task_id}.json"
+            audio_meta = {}
+            markdown = ""
+            
+            if result_path.exists():
+                with open(result_path, "r", encoding="utf-8") as f:
+                    result_content = json.load(f)
+                    if isinstance(result_content, dict):
+                        audio_meta = result_content.get("audio_meta", {})
+                        markdown_list = result_content.get("markdown", [])
+                        if markdown_list and isinstance(markdown_list, list) and len(markdown_list) > 0:
+                            markdown = markdown_list[0].get("content", "")
+            
+            tasks.append({
+                "task_id": task_id,
+                "status": status,
+                "audio_meta": audio_meta,
+                "markdown": markdown,
+                "created_at": datetime.fromtimestamp(status_file.stat().st_ctime).isoformat()
+            })
+        
+        tasks.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        return R.success(tasks)
+    
+    except Exception as e:
+        logger.error(f"获取任务列表失败: {e}")
+        return R.error(msg=str(e), code=500)

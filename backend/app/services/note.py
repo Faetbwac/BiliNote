@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Any
 
@@ -495,6 +496,8 @@ class NoteGenerator:
             video_id=task_data.get("video_id", ""),
             file_path="",
             duration=0,
+            cover_url=None,
+            platform=platform,
             raw_info={},
         )
 
@@ -506,15 +509,21 @@ class NoteGenerator:
         transcript = TranscriptResult(
             full_text=task_data.get("transcript", ""),
             segments=transcript_segments,
+            language=None,
         )
 
         self._update_status(task_id, TaskStatus.SUMMARIZING)
 
-        if options.get("format") and video_path:
+        formats = options.get("format", [])
+        # 如果开启了截图功能，确保 "screenshot" 在 formats 列表中
+        if options.get("screenshot") and "screenshot" not in formats:
+            formats = formats + ["screenshot"]
+        
+        if formats and video_path:
             markdown = self._post_process_markdown(
                 markdown=markdown,
                 video_path=Path(video_path) if video_path else None,
-                formats=options.get("format", []),
+                formats=formats,
                 audio_meta=audio_meta,
                 platform=platform,
             )
@@ -522,6 +531,37 @@ class NoteGenerator:
         markdown = prepend_source_link(markdown, task_data.get("video_url", ""))
 
         self._update_status(task_id, TaskStatus.SAVING)
+
+        result_path = NOTE_OUTPUT_DIR / f"{task_id}.json"
+        # 从任务选项中获取笔记风格，如果没有则使用默认值
+        options = task_data.get("options", {})
+        note_style = options.get("style", "detailed")
+        
+        result_content = {
+            "markdown": [{
+                "ver_id": f"{task_id}-{note_style}",
+                "content": markdown,
+                "style": note_style,
+                "created_at": datetime.now().isoformat()
+            }],
+            "transcript": {
+                "full_text": task_data.get("transcript", ""),
+                "language": None,
+                "raw": {},
+                "segments": segments_data
+            },
+            "audio_meta": {
+                "title": task_data.get("title", ""),
+                "platform": platform,
+                "video_id": task_data.get("video_id", "")
+            }
+        }
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(result_content, f, ensure_ascii=False, indent=2)
+
+        markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
+        markdown_cache_file.write_text(markdown, encoding="utf-8")
+
         self._save_metadata(
             video_id=task_data.get("video_id", ""),
             platform=platform,

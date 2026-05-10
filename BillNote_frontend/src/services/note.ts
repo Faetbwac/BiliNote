@@ -41,17 +41,17 @@ export const generateNote = async (data: {
   }
 }
 
-export const delete_task = async ({ video_id, platform }) => {
+export const delete_task = async ({ video_id, platform, task_id }) => {
   try {
     const data = {
       video_id,
       platform,
+      task_id,
     }
     const res = await request.post('/delete_task', data)
 
-
-      toast.success('任务已成功删除')
-      return res
+    toast.success('任务已成功删除')
+    return res
   } catch (e) {
     toast.error('请求异常，删除任务失败')
     console.error('❌ 删除任务失败:', e)
@@ -71,5 +71,14 @@ export const get_task_status = async (task_id: string) => {
     toast.error('笔记生成失败，请稍后重试')
 
     throw e // 抛出错误以便调用方处理
+  }
+}
+
+export const get_all_tasks = async () => {
+  try {
+    return await request.get('/tasks')
+  } catch (e) {
+    console.error('❌ 获取任务列表失败', e)
+    throw e
   }
 }
