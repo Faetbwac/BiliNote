@@ -177,7 +177,21 @@ const NoteForm = () => {
     return
   }, [])
   useEffect(() => {
-    if (!currentTask) return
+    if (!currentTask) {
+      // 当前没有任务时，重置表单到默认值
+      form.reset({
+        platform: 'bilibili',
+        quality: 'medium',
+        model_name: modelList[0]?.model_name || '',
+        style: 'minimal',
+        video_interval: 6,
+        grid_size: [2, 2],
+        format: [],
+        manual_ai: false,
+      })
+      return
+    }
+
     const { formData } = currentTask
 
     console.log('currentTask.formData.platform:', formData.platform)
@@ -195,6 +209,7 @@ const NoteForm = () => {
       video_interval: formData.video_interval ?? 6,
       grid_size: formData.grid_size ?? [2, 2],
       format: formData.format ?? [],
+      manual_ai: formData.manual_ai ?? false,
     })
   }, [
     // 当下面任意一个变了，就重新 reset
@@ -255,8 +270,18 @@ const NoteForm = () => {
   }
   const handleCreateNew = () => {
     // 🔁 这里清空当前任务状态
-    // 比如调用 resetCurrentTask() 或者 navigate 到一个新页面
     setCurrentTask(null)
+    // 重置表单到默认值
+    form.reset({
+      platform: 'bilibili',
+      quality: 'medium',
+      model_name: modelList[0]?.model_name || '',
+      style: 'minimal',
+      video_interval: 6,
+      grid_size: [2, 2],
+      format: [],
+      manual_ai: false,
+    })
   }
   const FormButton = () => {
     const label = generating ? '正在生成…' : editing ? '重新生成' : '生成笔记'
